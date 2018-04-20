@@ -1,0 +1,313 @@
+version: '2.2'
+
+services:
+  kerberos:
+    image: melan/kerberos
+    build: kerberos-docker
+    hostname: kerberos
+    restart: always
+    command:
+      - serve
+      - --admin
+      - kerberos
+      - --mode
+      - master
+      - --realm
+      - LOCAL_HBASE
+    environment:
+      REALM: LOCAL_HBASE
+#      DEBUG: 1
+#      JAVA_OPTS: -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5050
+    volumes:
+      - ./certs/ca-cert.pem:/etc/pki_service/ca/ca-cert.pem:ro
+      - ./kerberos/kadm5.acl:/var/kerberos/krb5kdc/kadm5.acl:ro
+      - ./kerberos/kdc.conf:/var/kerberos/krb5kdc/kdc.conf:ro
+      - ./kerberos/krb5.conf:/etc/krb5.conf:ro
+      - ./keytabs/kadmin_kerberos.keytab:/etc/krb5kdc/kadm5.keytab:ro
+      - ./keytabs:/etc/keytabs
+      - ./principal:/etc/krb5kdc
+    networks:
+      lh:
+        aliases:
+          - kerberos
+
+  zookeeper:
+    image: zookeeper:3.4.11
+    hostname: zookeeper
+    restart: always
+    healthcheck:
+      test: ["CMD", "/zookeeper-3.4.11/bin/zkServer.sh", "status"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      kerberos:
+        condition: service_healthy
+    ports:
+      - "2181:2181"
+    environment:
+      - "JVMFLAGS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf"
+    volumes:
+      - ./zk/zoo.cfg:/conf/zoo.cfg
+      - ./zk/jaas.conf:/etc/jaas.conf
+      - ./log4j.properties:/conf/log4j.properties:ro
+      - ./keytabs/zookeeper_zookeeper.keytab:/etc/security/keytabs/zookeeper.keytab:ro
+      - ./kerberos/krb5.conf:/etc/krb5.conf:ro
+      - zk-data-volume:/data
+      - zk-datalog-volume:/datalog
+    networks:
+      lh:
+        aliases:
+          - zookeeper
+
+  hdfsname:
+    image: melan/hbase:1.3.1
+    build: hbase-docker
+    hostname: hfdsname
+    restart: always
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/bin/curl", "-s", "-k", "https://127.0.0.1:50470"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - HBASE_LOCAL_ZOOKEEPER=no
+      - HBASE_SHARED_STORAGE=no
+      - HBASE_ENABLE_MASTER=no
+      - HBASE_ENABLE_REGIONSERVER=no
+      - HBASE_ENABLE_THRIFT=no
+      - HBASE_ENABLE_REST=no
+      - HADOOP_ENABLE_NAMENODE=yes
+      - HADOOP_NAMENODE_URL=hdfs://hdfsname
+      - ZK_HOST=localhbase_zookeeper_1.localhbase_lh
+      - ENABLE_KERBEROS=yes
+      - "HADOOP_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5003"
+      - HADOOP_SECURE_DN_USER=""
+    volumes:
+      - ./keytabs/hbase_hdfsname.keytab:/etc/security/keytabs/hbase_hdfsname.keytab:ro
+      - ./keytabs/hbase_hdfsdata.keytab:/etc/security/keytabs/hbase_hdfsdata.keytab:ro
+      - ./keytabs/hbase_hbase.keytab:/etc/security/keytabs/hbase.keytab:ro
+      - ./zkcli-jaas.conf:/etc/jaas.conf:ro
+      - ./keytabs/zkcli.keytab:/etc/security/keytabs/zkcli.keytab:ro
+      - ./kerberos/krb5.conf:/etc/krb5.conf:ro
+      - ./certs/hdfs-server-keystore.jks:/etc/certs/keystore.jks:ro      
+      - ./certs/ca-truststore.jks:/etc/certs/truststore.jks:ro
+      - ./hbase/hbase-site.xml.kerberos:/opt/hbase/conf/hbase-site.xml.kerberos:ro
+      - ./hbase/hdfs-site.xml.kerberos:/opt/hadoop/etc/hadoop/hdfs-site.xml.kerberos:ro
+      - ./hbase/core-site.xml.kerberos:/opt/hadoop/etc/hadoop/core-site.xml.kerberos:ro
+    expose:
+      - "8020"
+      - "50470"
+      - "5003"
+    ports:
+      - "8020:8020"     # Namenode
+      - "50470:50470"   # Namenode UI
+      - "5003:5003"
+    networks:
+      lh:
+        aliases:
+          - hdfsname
+
+  hdfsdata:
+    image: melan/hbase:1.3.1
+    build: hbase-docker
+    restart: always
+    hostname: hdfsdata
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+      hdfsname:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/usr/bin/curl", "-s", "-k", "https://127.0.0.1:50475"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    volumes:
+      - hbase-volume:/data
+      - ./keytabs/hbase_hdfsname.keytab:/etc/security/keytabs/hbase_hdfsname.keytab:ro
+      - ./keytabs/hbase_hdfsdata.keytab:/etc/security/keytabs/hbase_hdfsdata.keytab:ro
+      - ./keytabs/hbase_hbase.keytab:/etc/security/keytabs/hbase.keytab:ro
+      - ./zkcli-jaas.conf:/etc/jaas.conf:ro
+      - ./keytabs/zkcli.keytab:/etc/security/keytabs/zkcli.keytab:ro
+      - ./kerberos/krb5.conf:/etc/krb5.conf:ro
+      - ./certs/hdfs-server-keystore.jks:/etc/certs/keystore.jks:ro      
+      - ./certs/ca-truststore.jks:/etc/certs/truststore.jks:ro
+      - ./hbase/hbase-site.xml.kerberos:/opt/hbase/conf/hbase-site.xml.kerberos:ro
+      - ./hbase/hdfs-site.xml.kerberos:/opt/hadoop/etc/hadoop/hdfs-site.xml.kerberos:ro
+      - ./hbase/core-site.xml.kerberos:/opt/hadoop/etc/hadoop/core-site.xml.kerberos:ro
+    environment:
+      - HBASE_LOCAL_ZOOKEEPER=no
+      - HBASE_SHARED_STORAGE=yes
+      - HBASE_ENABLE_MASTER=no
+      - HBASE_ENABLE_REGIONSERVER=no
+      - HBASE_ENABLE_THRIFT=no
+      - HBASE_ENABLE_REST=no
+      - HADOOP_ENABLE_DATANODE=yes
+      - HADOOP_NAMENODE_URL=hdfs://hdfsname
+      - ZK_HOST=localhbase_zookeeper_1.localhbase_lh
+      - ENABLE_KERBEROS=yes
+      - "HADOOP_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5004"
+    expose:
+      - "50010"
+      - "50020"
+      - "50475"
+      - "5004"
+    ports:
+      - "5004:5004"
+#      - "50010:50010" # datanode
+#      - "50020:50020" # datanode ipc
+#      - "50475:50475" # datanode ui
+    networks:
+      - lh
+
+  # hbase:
+  #   image: melan/hbase:1.3.1
+  #   build: hbase-docker
+  #   hostname: hbase
+  #   restart: always
+  #   depends_on:
+  #     zookeeper:
+  #       condition: service_healthy
+  #     hdfsname:
+  #       condition: service_healthy
+  #     hdfsdata:
+  #       condition: service_healthy
+  #     kerberos:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "/usr/bin/curl", "-s", "127.0.0.1:16030/rs-status"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #   volumes:
+  #     - ./keytabs/hbase_hdfsname.keytab:/etc/security/keytabs/hbase_hdfsname.keytab:ro
+  #     - ./keytabs/hbase_hdfsdata.keytab:/etc/security/keytabs/hbase_hdfsdata.keytab:ro
+  #     - ./keytabs/hbase_hbase.keytab:/etc/security/keytabs/hbase.keytab:ro
+  #     - ./keytabs/HTTP_hbase.keytab:/etc/security/keytabs/HTTP.keytab:ro
+  #     - ./keytabs/zkcli.keytab:/etc/security/keytabs/zkcli.keytab:ro
+  #     - ./zkcli-jaas.conf:/etc/jaas.conf:ro
+  #     - ./kerberos/krb5.conf:/etc/krb5.conf:ro
+  #     - ./certs/thrift-server-keystore.jks:/etc/certs/keystore.jks:ro
+  #     - ./certs/ca-truststore.jks:/etc/certs/truststore.jks:ro
+  #     - ./hbase/hbase-site.xml.kerberos:/opt/hbase/conf/hbase-site.xml.kerberos:ro
+  #     - ./hbase/hdfs-site.xml.kerberos:/opt/hadoop/etc/hadoop/hdfs-site.xml.kerberos:ro
+  #     - ./hbase/core-site.xml.kerberos:/opt/hadoop/etc/hadoop/core-site.xml.kerberos:ro
+  #     - ./hbase/regionservers:/opt/hbase/conf/regionservers:ro
+  #     - ./log4j.properties:/opt/hbase/conf/log4j.properties:ro
+  #   environment:
+  #     - HBASE_LOCAL_ZOOKEEPER=no
+  #     - HBASE_SHARED_STORAGE=yes
+  #     - ZK_HOST=localhbase_zookeeper_1.localhbase_lh
+  #     - HADOOP_NAMENODE_URL=hdfs://hdfsname
+  #     - ENABLE_KERBEROS=yes
+  #     - "HBASE_MASTER_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+  #     - "HBASE_REGIONSERVER_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5006"
+  #     - "HBASE_THRIFT_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5007"
+  #     - "HBASE_REST_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5008"
+  #     - HADOOP_JAAS_DEBUG=true
+  #     - HBASE_ENABLE_THRIFT=no
+  #     - HBASE_ENABLE_REST=no
+  #     - HBASE_ENABLE_REGIONSERVER=yes
+  #     - HBASE_ENABLE_MASTER=no
+  #   expose:
+  #     - "5005"
+  #     - "5006"
+  #     - "5007"
+  #     - "5008"
+  #     - "8085"
+  #     - "9090"
+  #     - "9095"
+  #     - "16000"
+  #     - "16010"
+  #     - "16020"
+  #     - "16030"
+  #   ports:
+  #     - "5006:5006"
+  #     - "5007:5007"
+  #     - "5008:5008"
+  #     - "8085:8085"   # REST Web UI at :8085/rest.jsp
+  #     - "9090:9090"   # Thrift API
+  #     - "9095:9095"   # Thrift Web UI
+  #     - "16020:16020" # HBase Regionserver
+  #     - "16030:16030" # HBase Regionserver Web UI
+  #   networks:
+  #     lh:
+  #       aliases:
+  #         - hbase
+
+  # hbase-master:
+  #   image: melan/hbase:1.3.1
+  #   build: hbase-docker
+  #   hostname: hbase-master
+  #   restart: always
+  #   depends_on:
+  #     zookeeper:
+  #       condition: service_healthy
+  #     hdfsname:
+  #       condition: service_healthy
+  #     hdfsdata:
+  #       condition: service_healthy
+  #     hbase:
+  #       condition: service_healthy
+  #     kerberos:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "/usr/bin/curl", "-s", "127.0.0.1:16010/master-status"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #   volumes:
+  #     - ./keytabs/hdfs.keytab:/etc/security/keytabs/hdfs.keytab:ro
+  #     - ./keytabs/hbase_hbase-master.keytab:/etc/security/keytabs/hbase.keytab:ro
+  #     - ./keytabs/HTTP_hbase-master.keytab:/etc/security/keytabs/HTTP.keytab:ro
+  #     - ./keytabs/zkcli.keytab:/etc/security/keytabs/zkcli.keytab:ro
+  #     - ./zkcli-jaas.conf:/etc/jaas.conf:ro
+  #     - ./kerberos/krb5.conf:/etc/krb5.conf:ro
+  #     - ./certs/thrift-server-keystore.jks:/etc/certs/keystore.jks:ro
+  #     - ./certs/ca-truststore.jks:/etc/certs/truststore.jks:ro
+  #     - ./hbase/hbase-site.xml.kerberos:/opt/hbase/conf/hbase-site.xml.kerberos:ro
+  #     - ./hbase/hdfs-site.xml.kerberos:/opt/hadoop/etc/hadoop/hdfs-site.xml.kerberos:ro
+  #     - ./hbase/core-site.xml.kerberos:/opt/hadoop/etc/hadoop/core-site.xml.kerberos:ro
+  #     - ./hbase/regionservers:/opt/hbase/conf/regionservers:ro
+  #     - ./log4j.properties:/opt/hbase/conf/log4j.properties:ro
+  #   environment:
+  #     - HBASE_LOCAL_ZOOKEEPER=no
+  #     - HBASE_SHARED_STORAGE=yes
+  #     - ZK_HOST=localhbase_zookeeper_1.localhbase_lh
+  #     - HADOOP_NAMENODE_URL=hdfs://hdfsname
+  #     - ENABLE_KERBEROS=yes
+  #     - "HBASE_MASTER_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"
+  #     - "HBASE_REGIONSERVER_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5006"
+  #     - "HBASE_THRIFT_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5007"
+  #     - "HBASE_REST_OPTS=-Djava.security.auth.login.config=/etc/jaas.conf -Djava.security.krb5.conf=/etc/krb5.conf -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5008"
+  #     - HADOOP_JAAS_DEBUG=true
+  #     - HBASE_ENABLE_THRIFT=yes
+  #     - HBASE_ENABLE_REST=yes
+  #     - HBASE_ENABLE_REGIONSERVER=no
+  #     - HBASE_ENABLE_MASTER=yes
+  #   expose:
+  #     - "5005"
+  #     - "16000"
+  #     - "16010"
+  #   ports:
+  #     - "5005:5005"
+  #     - "16000:16000" # HBase Master
+  #     - "16010:16010" # HBase Master Web UI
+  #   networks:
+  #     lh:
+  #       aliases:
+  #         - hbase-master
+
+networks:
+  lh:
+    driver: bridge
+
+volumes:
+  hbase-volume:
+  zk-data-volume:
+  zk-datalog-volume:
+  hbase-krb:

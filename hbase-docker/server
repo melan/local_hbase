@@ -1,0 +1,212 @@
+#!/bin/bash
+
+set -e
+
+DEBUG=${DEBUG:-no}
+
+if [ "${DEBUG}" = "yes" ]; then
+  set -x
+fi
+
+if [ "z${JAVA_HOME}" = "z" ]; then
+  export JAVA_HOME=$(echo $(java -XshowSettings:properties -version 2>&1 > /dev/null | grep 'java.home' | cut -d '=' -f 2))
+fi
+
+# Start HBase
+#  1) thrift API/Web UI
+#  2) hbase master (which runs the local region server)
+
+HBASE_LOCAL_ZOOKEEPER=${HBASE_LOCAL_ZOOKEEPER:-yes}
+HBASE_SHARED_STORAGE=${HBASE_SHARED_STORAGE:-no}
+HBASE_ENABLE_THRIFT=${HBASE_ENABLE_THRIFT:-yes}
+HBASE_ENABLE_REST=${HBASE_ENABLE_REST:-yes}
+HBASE_ENABLE_REGIONSERVER=${HBASE_ENABLE_REGIONSERVER:-yes}
+HBASE_ENABLE_MASTER=${HBASE_ENABLE_MASTER:-yes}
+HADOOP_ENABLE_NAMENODE=${HADOOP_ENABLE_NAMENODE:-no}
+HADOOP_ENABLE_DATANODE=${HADOOP_ENABLE_DATANODE:-no}
+ENABLE_KERBEROS=${ENABLE_KERBEROS:-no}
+WAIT_FOR_SERVICE=${WAIT_FOR_SERVICE:-yes}
+
+HDFS_KERBEROS_CONFIG=$(cat /opt/hadoop/etc/hadoop/hdfs-site.xml.kerberos)
+CORE_KERBEROS_CONFIG=$(cat /opt/hadoop/etc/hadoop/core-site.xml.kerberos)
+HBASE_KERBEROS_CONFIG=$(cat /opt/hbase/conf/hbase-site.xml.kerberos)
+
+function wait_curl() {
+  local url=$1;
+  local https=$2;
+
+  local validate_cert=""
+  if [ -n "${https}" ]; then
+    validate_cert="-k"
+  fi
+
+  echo $(/usr/bin/curl -s ${validate_cert} -m 5 -s "${url}" >/dev/null 2>&1; echo $?)
+}
+
+function wait_port() {
+  local ip=$1;
+  local port=$2;
+
+  local res=$( $(echo > /dev/tcp/${ip}/${port}) > /dev/null 2>&1 && echo "up" || echo "down" )
+  if [ "${res}" = "up" ]; then
+    echo 0
+  else
+    echo 1
+  fi
+}
+
+if [ -n "${HADOOP_NAMENODE_URL}" ]; then
+  HBASE_ROOTDIR="${HADOOP_NAMENODE_URL%%/}:8020/hbase"
+elif [ "${HBASE_SHARED_STORAGE}" == "yes" ]; then
+  HBASE_ROOTDIR="file:///data/${HOSTNAME}/hbase"
+else
+  HBASE_ROOTDIR="file:///data/hbase"
+fi
+
+echo "set hbase root dir to ${HBASE_ROOTDIR}"
+sed -i 's@<!-- HBASE ROOTDIR -->@'"${HBASE_ROOTDIR}"'@g' /opt/hbase/conf/hbase-site.xml
+
+
+if [ "${HBASE_LOCAL_ZOOKEEPER}" = "yes" ]; then
+  export ZK_HOST="${HOSTNAME}"
+fi
+
+# Prepare environment
+/opt/replace-hostname
+if [ "${HBASE_SHARED_STORAGE}" = "yes" ]; then
+  mkdir -p /data/${HOSTNAME}/hbase /data/${HOSTNAME}/run /data/${HOSTNAME}/hdfs/name /data/${HOSTNAME}/hdfs/data
+else
+  mkdir -p /data/hbase /data/run /data/hdfs/name /data/hdfs/data
+fi
+
+# Enable kerberos
+if [ "${ENABLE_KERBEROS}" = "yes" ]; then
+  tmp_file=$(mktemp)
+
+  file="/opt/hadoop/etc/hadoop/core-site.xml"
+  awk -v r="${CORE_KERBEROS_CONFIG}" '{gsub(/<!-- KERBEROS -->/,r)}1' "${file}" > "${tmp_file}" && mv "${tmp_file}" "${file}"
+
+  file="/opt/hadoop/etc/hadoop/hdfs-site.xml"
+  awk -v r="${HDFS_KERBEROS_CONFIG}" '{gsub(/<!-- KERBEROS -->/,r)}1' "${file}" > "${tmp_file}" && mv "${tmp_file}" "${file}"
+
+  file="/opt/hbase/conf/hbase-site.xml"
+  awk -v r="${HBASE_KERBEROS_CONFIG}" '{gsub(/<!-- KERBEROS -->/,r)}1' "${file}" > "${tmp_file}" && mv "${tmp_file}" "${file}"
+fi
+
+# Zookeeper server (background)
+if [ "${HBASE_LOCAL_ZOOKEEPER}" = "yes" ]; then
+  echo "start zookeeper"
+  /opt/hbase/bin/hbase zookeeper start &
+fi
+
+# Wait for zookeeper to come up
+zooPort=2181
+printf "Waiting for zookeeper (${ZK_HOST}:${zooPort}) to come up"
+while [ ! $(wait_port "${ZK_HOST}" "${zooPort}") ]; do
+  echo 'Waiting for zookeeper ..'
+  sleep 5
+done
+
+if [ "${HADOOP_ENABLE_NAMENODE}" = "yes" -o "${HADOOP_ENABLE_DATANODE}" = "yes" ]; then
+  echo "replace hadoop name node url"
+  sed -i 's@<!-- DefaultFS -->@'"${HADOOP_NAMENODE_URL}"'@g' /opt/hadoop/etc/hadoop/core-site.xml
+fi
+
+# HDFS Name Node
+if [ "${HADOOP_ENABLE_NAMENODE}" = "yes" ]; then
+  echo "start hadoop name node"
+  if [ ! -d '/data/hdfs/name/current/' ]; then
+    /opt/hadoop/bin/hdfs --config /opt/hadoop/etc/hadoop namenode -format -force
+  fi
+  exec /opt/hadoop/bin/hdfs --config /opt/hadoop/etc/hadoop namenode &
+
+  namenode_url="http://127.0.0.1:50070"
+  https=""
+  if [ "${ENABLE_KERBEROS}" = "yes" ]; then
+    namenode_url="https://127.0.0.1:50470"
+    https="yes"
+  fi
+
+  if [ "${WAIT_FOR_SERVICE}" = "yes" ]; then
+    printf "Waiting for HDFS Namenode (${namenode_url}) to come up"
+    while [ ! $(wait_curl "${namenode_url}" "${https}" ) ]; do
+      echo "Waiting for HDFS Namenode ..."
+      sleep 5
+    done
+  fi
+fi
+
+# HDFS Data Node
+if [ "${HADOOP_ENABLE_DATANODE}" = "yes" ]; then
+  echo "start hadoop data node"
+  exec /opt/hadoop/bin/hdfs --config /opt/hadoop/etc/hadoop datanode &
+
+  datanode_url="http://127.0.0.1:50075"
+  https=""
+  if [ "${ENABLE_KERBEROS}" = "yes" ]; then
+    datanode_url="https://127.0.0.1:50475"
+    https="yes"
+  fi
+
+  if [ "${WAIT_FOR_SERVICE}" = "yes" ]; then
+    printf "Waiting for HDFS Datanode (${datanode_url}) to come up"
+    while [ ! $(wait_curl "${datanode_url}" "${https}" ) ]; do
+      echo "Waiting for HDFS Datanode ..."
+      sleep 5
+    done
+  fi
+fi
+
+
+if [ "${HBASE_ENABLE_REGIONSERVER}" = "yes" ]; then
+  echo "hbase regionserver start"
+  exec /opt/hbase/bin/hbase regionserver start &
+
+  rserver_url="http://127.0.0.1:16030/rs-status"
+  https=""
+
+  if [ "${WAIT_FOR_SERVICE}" = "yes" ]; then
+    printf "Waiting for HBase Region server (${rserver_url}) to come up"
+    while [ ! $(wait_curl "${rserver_url}" "${https}" ) ]; do
+      echo "Waiting for HBase Region server ..."
+      sleep 5
+    done
+  fi
+fi
+
+# Thrift server (background)
+# Ports: 9090 API and 9095 UI
+if [ "${HBASE_ENABLE_THRIFT}" = "yes" ]; then
+  echo "start hbase thrift"
+  /opt/hbase/bin/hbase thrift start &
+fi
+
+# REST server (background)
+# Ports: 8080 API
+if [ "${HBASE_ENABLE_REST}" = "yes" ]; then
+  echo "start hbase rest"
+  /opt/hbase/bin/hbase rest start &
+fi
+
+# Master server
+# Ports: Master: 16000 API, 16010 UI;
+if [ "${HBASE_ENABLE_MASTER}" = "yes" ]; then
+  echo "start hbase master"
+  exec /opt/hbase/bin/hbase master start &
+
+  master_url="http://127.0.0.1:16010/master-status"
+  https=""
+
+  if [ "${WAIT_FOR_SERVICE}" = "yes" ]; then
+    printf "Waiting for HBase Master (${master_url}) to come up"
+    while [ ! $(wait_curl "${master_url}" "${https}" ) ]; do
+      echo "Waiting for HBase Master server ..."
+      sleep 5
+    done
+  fi
+fi
+
+
+while true; do
+  sleep 10
+done

@@ -1,0 +1,113 @@
+<?xml version="1.0"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+
+<configuration>
+
+  <!-- file system properties -->
+
+  <property>
+    <name>dfs.name.dir</name>
+    <value>file:///data/hostname-if-shared/hdfs/name</value>
+    <description>Determines where on the local filesystem the DFS name node
+      should store the name table.  If this is a comma-delimited list
+      of directories then the name table is replicated in all of the
+      directories, for redundancy. </description>
+    <final>true</final>
+  </property>
+
+  <property>
+    <name>dfs.data.dir</name>
+    <value>file:///data/hostname-if-shared/hdfs/data</value>
+    <description>Determines where on the local filesystem an DFS data node
+      should store its blocks.  If this is a comma-delimited
+      list of directories, then data will be stored in all named
+      directories, typically on different devices.
+      Directories that do not exist are ignored.
+    </description>
+    <final>true</final>
+  </property>
+
+  <property>
+    <name>dfs.heartbeat.interval</name>
+    <value>3</value>
+    <description>Determines datanode heartbeat interval in seconds.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.safemode.threshold.pct</name>
+    <value>1.0f</value>
+    <description>
+      Specifies the percentage of blocks that should satisfy
+      the minimal replication requirement defined by dfs.replication.min.
+      Values less than or equal to 0 mean not to start in safe mode.
+      Values greater than 1 will make safe mode permanent.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.datanode.address</name>
+    <value>0.0.0.0:50010</value>
+  </property>
+
+  <property>
+    <name>dfs.datanode.http.address</name>
+    <value>0.0.0.0:50075</value>
+  </property>
+
+  <property>
+    <name>dfs.datanode.ipc.address</name>
+    <value>0.0.0.0:50020</value>
+    <description>
+      The datanode ipc server address and port.
+      If the port is 0 then the server will start on a free port.
+    </description>
+  </property>
+
+  <!-- Permissions configuration -->
+
+  <property>
+    <name>dfs.umaskmode</name>
+    <value>077</value>
+    <description>
+      The octal umask used when creating files and directories.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.permissions.enabled</name>
+    <value>false</value>
+    <description>
+      If "true", enable permission checking in HDFS.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.permissions</name>
+    <value>false</value>
+    <description>
+      If "true", enable permission checking in HDFS.
+    </description>
+  </property>
+
+  <property>
+    <name>dfs.datanode.data.dir.perm</name>
+    <value>700</value>
+    <description>The permissions that should be there on dfs.data.dir
+      directories. The datanode will not come up if the permissions are
+      different on existing dfs.data.dir directories. If the directories
+      don't exist, they will be created with this permission.</description>
+  </property>
+
+  <property>
+    <name>dfs.access.time.precision</name>
+    <value>0</value>
+    <description>The access time for HDFS file is precise upto this value.
+      The default value is 1 hour. Setting a value of 0 disables
+      access times for HDFS.
+    </description>
+  </property>
+
+  <!-- KERBEROS -->
+
+</configuration>

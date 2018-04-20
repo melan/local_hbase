@@ -1,0 +1,24 @@
+  <property>
+    <name>hbase.regionserver.kerberos.principal</name>
+    <value>${hbase.master.kerberos.principal}</value>
+  </property>
+
+  <property>
+    <name>hbase.regionserver.keytab.file</name>
+    <value>${hbase.master.keytab.file}</value>
+  </property>
+
+  <property>
+    <name>hbase.master.kerberos.principal</name>
+    <value>hbase@LOCAL_HBASE</value>
+  </property>
+
+  <property>
+    <name>hbase.master.keytab.file</name>
+    <value>/opt/hbase/conf/hbase.keytab</value>
+  </property>
+
+  <property>
+    <name>hbase.security.authentication</name>
+    <value>kerberos</value>
+  </property>
